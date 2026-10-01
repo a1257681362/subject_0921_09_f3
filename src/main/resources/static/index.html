@@ -41,6 +41,13 @@
   .tag.down { background: #eee; color: #666; }
   .tag.offset { background: #fdeee2; color: #c2620a; }
   .tag.kind { background: #f3e8ff; color: #7c3aed; }
+  .tag.located { background: #eafaf0; color: #1a8a4a; }
+  .tag.void { background: #fdecea; color: #c0392b; }
+  .tag.locate { background: #eafaf0; color: #1a8a4a; }
+  .tag.correct { background: #e8f3ff; color: #1f6fd0; }
+  .tag.voidver { background: #fdeee2; color: #c2620a; }
+  tr.overlap td { background: #fff6e5; }
+  tr.overlap td:first-child { border-left: 3px solid #d9820b; }
   .tag.pending { background: #eee; color: #666; }
   .tag.processing { background: #e8f3ff; color: #1f6fd0; }
   .tag.success { background: #eafaf0; color: #1a8a4a; }
@@ -77,6 +84,7 @@
     <div class="tab" data-tab="calendar">⑤ 档期月历</div>
     <div class="tab" data-tab="version">⑥ 版本与留底</div>
     <div class="tab" data-tab="asset">⑦ 素材转档</div>
+    <div class="tab" data-tab="geo">⑧ 经纬度圈商圈</div>
   </div>
 
   <!-- 点位挂牌 -->
@@ -216,6 +224,46 @@
       <div id="assetJobs"></div>
       <div id="assetVersions" style="margin-top:10px"></div>
     </div>
+  </div>
+
+  <!-- 经纬度圈商圈 -->
+  <div class="panel" id="panel-geo">
+    <h3>点位经纬度建档（十进制度，归属按录入时主商圈）</h3>
+    <div class="grid">
+      <div><label>点位编号 *</label><input id="geoSiteNo" placeholder="已挂牌的点位编号"></div>
+      <div><label>经度 *（十进制度）</label><input id="geoLon" placeholder="如 116.4108330"></div>
+      <div><label>纬度 *（十进制度）</label><input id="geoLat" placeholder="如 39.9087220"></div>
+      <div><label>主商圈（留空取点位档案商圈）</label><input id="geoDistrict"></div>
+      <div><label>坐标来源</label><select id="geoSource"><option value="GPS">GPS 实测</option><option value="MANUAL">手工录入</option></select></div>
+      <div><label>发生日（留空取今天）</label><input id="geoDate" type="date"></div>
+      <div><label>经手人（留空取登录人）</label><input id="geoOperator"></div>
+      <div class="span2"><label>更正原因 / 备注</label><input id="geoReason"></div>
+    </div>
+    <div class="actions">
+      <button onclick="locateGeo()">建档 / 更正坐标（更正另起版本）</button>
+      <button class="gray" onclick="loadGeoDetail()">查档案与版本</button>
+      <button class="danger" onclick="voidGeo()">作废坐标</button>
+    </div>
+    <p class="muted" style="margin-top:8px">首次定位记 v1（LOCATED 已定位）；坐标更正不抹历史另起一版；作废记 VOID 版本、状态置“已作废”，作废后不参与圈选、可重新建档。</p>
+    <div id="geoDetailBox" style="margin-top:12px;display:none">
+      <table id="geoCurrentTable"></table>
+      <h3>经纬度建档版本（只追加，不抹历史）</h3>
+      <table id="geoVersionTable"></table>
+    </div>
+
+    <h3>按半径捞在营点位（给坐标、给公里数，结果按距离排序）</h3>
+    <div class="grid">
+      <div><label>圆心经度 *</label><input id="nbLon" placeholder="116.4000000"></div>
+      <div><label>圆心纬度 *</label><input id="nbLat" placeholder="39.9000000"></div>
+      <div><label>半径（公里）*</label><input id="nbRadius" placeholder="如 3" type="number" step="0.1" min="0.1" max="100"></div>
+      <div style="align-self:end"><button class="gray" onclick="loadNearby()">圈选</button></div>
+    </div>
+    <div class="actions">
+      <button onclick="exportNearbyCsv()">整页导出 CSV（全部命中）</button>
+      <span id="nbSummary" class="muted" style="align-self:center"></span>
+    </div>
+    <p class="muted" style="margin-top:6px">只列“在营”点位：点位挂牌在营且坐标已定位（未作废、未建档不列）。一圈圈进多个主商圈即压在商圈重叠带，行底橙标；归属一律按建档时录入的主商圈，“点位档案商圈”列仅供对照。</p>
+    <table id="nearbyTable"></table>
   </div>
 </div>
 
@@ -542,6 +590,115 @@ async function retryAsset(id) {
     toast('已另起新版本重新转档，任务 ' + job.jobNo, true);
     pollJob(job.id, id);
   } catch (e) { toast(e.message); }
+}
+
+/* ===== ⑧ 经纬度建档与圈商圈 ===== */
+let LAST_NEARBY = null;
+
+function geoStatusTag(s) {
+  return { LOCATED: '<span class="tag located">已定位</span>', VOID: '<span class="tag void">已作废</span>' }[s] || esc(s);
+}
+function geoChangeTag(c) {
+  return { LOCATE: '<span class="tag locate">首次定位</span>', CORRECT: '<span class="tag correct">坐标更正</span>',
+    VOID: '<span class="tag voidver">坐标作废</span>' }[c] || esc(c);
+}
+
+async function locateGeo() {
+  try {
+    const d = await call('POST', '/sites-geo', {
+      siteNo: val('geoSiteNo'), longitude: val('geoLon'), latitude: val('geoLat'),
+      businessDistrict: val('geoDistrict'), source: document.getElementById('geoSource').value,
+      occurDate: val('geoDate'), operatorName: val('geoOperator'), reason: val('geoReason')
+    });
+    toast('坐标已登记，当前 v' + d.latestVersionNo + '（' + d.longitude + ', ' + d.latitude + '）', true);
+    document.getElementById('geoReason').value = '';
+    loadGeoDetail();
+  } catch (e) { toast(e.message); }
+}
+
+async function loadGeoDetail() {
+  try {
+    const d = await call('GET', '/sites-geo/' + encodeURIComponent(val('geoSiteNo')));
+    const g = d.geo;
+    document.getElementById('geoDetailBox').style.display = 'block';
+    document.getElementById('geoCurrentTable').innerHTML =
+      '<tr><th>点位</th><th>当前经度</th><th>当前纬度</th><th>归属主商圈</th><th>来源</th><th>状态</th><th>版本</th><th>经手人</th><th>作废原因</th></tr>'
+      + `<tr><td>${esc(d.site.siteNo)}<br><span class="muted">档案商圈：${esc(d.site.businessDistrict)}</span></td>
+        <td>${esc(g.longitude)}</td><td>${esc(g.latitude)}</td><td><b>${esc(g.businessDistrict)}</b></td>
+        <td>${esc(g.source)}</td><td>${geoStatusTag(g.geoStatus)}</td><td>v${g.latestVersionNo}</td>
+        <td>${esc(g.operatorName)}</td><td>${esc(g.voidReason || '—')}</td></tr>`;
+    document.getElementById('geoVersionTable').innerHTML =
+      '<tr><th>版本</th><th>动作</th><th>经度</th><th>纬度</th><th>主商圈</th><th>来源</th><th>发生日</th><th>经手人</th><th>原因</th></tr>'
+      + d.versions.map(v => `<tr>
+        <td>v${v.versionNo}</td><td>${geoChangeTag(v.changeType)}</td>
+        <td>${esc(v.longitude)}</td><td>${esc(v.latitude)}</td><td>${esc(v.businessDistrict)}</td>
+        <td>${esc(v.source || '—')}</td><td>${esc(v.occurDate)}</td><td>${esc(v.operatorName)}</td>
+        <td>${esc(v.reason || '—')}</td></tr>`).join('');
+  } catch (e) { toast(e.message); }
+}
+
+async function voidGeo() {
+  const reason = prompt('作废原因？（点位撤销或坐标录错；作废留痕，可重新建档）', '');
+  if (reason === null) return;
+  try {
+    await call('POST', '/sites-geo/' + encodeURIComponent(val('geoSiteNo')) + '/void',
+      { reason: reason || '坐标作废', operatorName: val('geoOperator') });
+    toast('坐标已作废，不再参与圈选；可重新建档', true);
+    loadGeoDetail();
+  } catch (e) { toast(e.message); }
+}
+
+function nearbyQuery() {
+  return '?longitude=' + encodeURIComponent(val('nbLon'))
+    + '&latitude=' + encodeURIComponent(val('nbLat'))
+    + '&radiusKm=' + encodeURIComponent(val('nbRadius'));
+}
+
+async function loadNearby() {
+  try {
+    const d = await call('GET', '/sites-geo/nearby' + nearbyQuery());
+    LAST_NEARBY = d;
+    const zone = d.districtCount > 1 ? ` —— 压在商圈重叠带（${d.districtCount} 个主商圈）` : '';
+    document.getElementById('nbSummary').textContent =
+      `命中 ${d.total} 个在营点位，半径 ${d.radiusKm} km${zone}`;
+    document.getElementById('nearbyTable').innerHTML =
+      '<tr><th>距离(公里)</th><th>点位编号</th><th>尺寸</th><th>朝向</th><th>经度</th><th>纬度</th>'
+      + '<th>归属主商圈</th><th>点位档案商圈</th><th>重叠带</th><th>同圈其他主商圈</th><th>版本</th><th>经手人</th></tr>'
+      + d.items.map(it => `<tr class="${it.overlap ? 'overlap' : ''}">
+        <td>${esc(it.distanceKm)} <span class="muted">(${it.distanceMeters}m)</span></td>
+        <td><a href="javascript:void(0)" onclick="pickGeoSite('${esc(it.siteNo)}')">${esc(it.siteNo)}</a></td>
+        <td>${esc(it.sizeSpec)}</td><td>${esc(it.orientation)}</td>
+        <td>${esc(it.longitude)}</td><td>${esc(it.latitude)}</td>
+        <td><b>${esc(it.businessDistrict)}</b></td>
+        <td>${esc(it.siteBusinessDistrict)}</td>
+        <td>${it.overlap ? '<span class="tag voidver">重叠带</span>' : '—'}</td>
+        <td>${esc((it.overlapDistricts || []).join(' / ') || '—')}</td>
+        <td>v${it.versionNo}</td><td>${esc(it.operatorName)}</td></tr>`).join('');
+  } catch (e) { toast(e.message); }
+}
+
+function pickGeoSite(no) {
+  document.getElementById('geoSiteNo').value = no;
+  loadGeoDetail();
+  toast('已带入点位 ' + no, true);
+}
+
+async function exportNearbyCsv() {
+  if (!val('nbLon') || !val('nbLat') || !val('nbRadius')) { toast('先填圆心和半径再导出'); return; }
+  // 整页导出：直接走下载接口，导出的是全部命中（非页内截断）；带 cookie 保持登录
+  const resp = await fetch(API + '/sites-geo/nearby/export.csv' + nearbyQuery());
+  if (resp.status === 401) { showLogin(); toast('未登录'); return; }
+  if (!resp.ok) { toast('导出失败 ' + resp.status); return; }
+  const blob = await resp.blob();
+  const disposition = resp.headers.get('Content-Disposition') || '';
+  const m = disposition.match(/filename\*=UTF-8''(.+)$/);
+  const fileName = m ? decodeURIComponent(m[1]) : '点位圈选.csv';
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = fileName;
+  document.body.appendChild(a); a.click(); a.remove();
+  URL.revokeObjectURL(url);
+  toast('已导出整页结果：' + fileName, true);
 }
 
 init();
