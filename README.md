@@ -37,6 +37,20 @@
 - 上传接口立即返回任务号，转档在后台线程池异步执行（事务提交后触发，避免后台读不到未提交任务）。
 - 原图与产物落盘 `asset.storage-root`（默认 `./data/assets`，原图按指纹存、产物按 素材/版本/规格 存），库里存相对路径。
 
+## F3：点位经纬度建档与半径捞点（f3-site-geo-1）
+
+拓展部圈商圈不再只靠感觉：点位档案补上经纬度，商圈落成圆心+半径的圈界，给个坐标和公里数就能把圈里在营点位全捞出来，跑盘清单对得上。
+
+业务口径：
+
+- **坐标十进制度落库，小数位不丢**：纬度 `DECIMAL(10,7)`、经度 `DECIMAL(11,7)`，最多 7 位小数；超界（纬度 ±90、经度 ±180）或超位直接拒收，**不静默截断**。
+- **经纬度建档版本**：首次建档案记 v1（来源 INITIAL）；坐标录错了纠偏重录，不抹历史，另起一版（来源 CORRECT），旧版置 SUPERSEDED 可回翻；点位档案上的坐标始终指向当前生效版本。
+- **经纬度建档状态**：点位 `UNFILED 未建档 / FILED 已建档`，未建档的点位不进半径检索结果。
+- **商圈圈界**：每个商圈一条圆心坐标+半径（公里），同名不能重复圈；圈错了按商圈名**重圈**（当前态覆盖）。点位归属不受影响——**归属始终按录入时定的主商圈走**。
+- **半径捞点**：给个坐标、给个公里数（0~100，最多 3 位小数），圈里**在营且已建档**的点位全列出，Haversine 球面距离，**按距离升序**（并列按点位编号稳住）。
+- **商圈重叠带标出来**：点位坐标同时落进 ≥2 个商圈圈界的，结果里标「重叠带」并列出实际覆盖的商圈名单；标记只作提示，不改归属。
+- **整页能导出**：检索结果整页导出 CSV（带 BOM，Excel 打开不乱码），列含主商圈归属、距离、十进制度坐标、重叠带标记。
+
 ## 接口一览（均在 /api 下，除 health/login 外需登录）
 
 | 动作 | 接口 |
@@ -53,14 +67,17 @@
 | 当前转档规格 | `GET /api/assets/specs` |
 | 转档状态轮询 / 重新转档 | `GET /api/assets/jobs/{jobId}`、`POST /api/assets/{id}/retry` |
 | 产物下载 / 原图下载 | `GET /api/assets/files/{fileId}/download`、`/api/assets/{id}/original` |
+| 经纬度建档 / 建档版本翻查 | `POST /api/sites/{siteNo}/geo`、`GET /api/sites/{siteNo}/geo/versions` |
+| 半径捞点 / 整页导出 CSV | `GET /api/sites/geo/search?lat=&lng=&radiusKm=`、`GET /api/sites/geo/search/export?...` |
+| 商圈圈界：圈定 / 翻查 / 重圈 | `POST /api/districts`、`GET /api/districts`、`PUT /api/districts/{districtName}` |
 
-演示界面：启动后浏览器打开根路径 `/`（周例会演示用，六个页签覆盖全流程）。
+演示界面：启动后浏览器打开根路径 `/`（周例会演示用，八个页签覆盖全流程）。
 
 ## 启动
 
 1. 执行 `mvn -q -DskipTests compile` 验证骨架构建。
 2. 执行 `mvn spring-boot:run` 启动应用；Spring Boot 会自动执行 `src/main/resources/schema.sql`。
 3. H2 数据文件默认写入工作区 `data/evops`。如需修改路径，编辑 `application.yml` 中的 `jdbc:h2:file:` 连接串。
-4. 验证：`mvn test`（11 项底账口径测试 + 7 项素材转档测试，独立内存 H2）。
+4. 验证：`mvn test`（11 项底账口径测试 + 7 项素材转档测试 + 8 项坐标建档测试，独立内存 H2）。
 
 表结构交付副本：`docs/schema/evops.sql`（容器内根目录 `../../docs/schema` 不可写，交付副本置于工作区内），应与 `src/main/resources/schema.sql` 保持一致。
